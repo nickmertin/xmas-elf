@@ -1,6 +1,12 @@
 #![no_std]
-#![warn(box_pointers, missing_copy_implementations, missing_debug_implementations)]
-#![warn(unused_extern_crates, unused_import_braces, unused_qualifications, unused_results)]
+#![warn(
+    missing_copy_implementations,
+    missing_debug_implementations,
+    unused_extern_crates,
+    unused_import_braces,
+    unused_qualifications,
+    unused_results
+)]
 #![warn(variant_size_differences)]
 
 // TODO move to a module
@@ -18,83 +24,156 @@ macro_rules! check {
 }
 
 #[cfg(feature = "compression")]
-extern crate std;
-#[cfg(feature = "compression")]
 extern crate flate2;
+#[cfg(feature = "compression")]
+extern crate std;
 
 extern crate zero;
 
-pub mod header;
-pub mod sections;
-pub mod program;
-pub mod symbol_table;
 pub mod dynamic;
 pub mod hash;
+pub mod header;
+pub mod program;
+pub mod sections;
+pub mod slice;
+pub mod symbol_table;
+
+use core::{
+    convert::Infallible,
+    ops::{Deref, Index, Range, RangeFrom},
+};
 
 use header::Header;
-use sections::{SectionHeader, SectionIter};
 use program::{ProgramHeader, ProgramIter};
-use zero::{read, read_str};
+use sections::{SectionHeader, SectionIter};
+use zero::Pod;
+
+#[derive(Debug)]
+pub enum ParseError<T> {
+    Io(T),
+    Message(&'static str),
+}
+
+pub trait Buffer: Index<usize, Output = u8> + Copy {
+    type Error;
+
+    type Ref<'a, T: Copy + 'a>: Copy + Deref<Target = T> + 'a
+    where
+        Self: 'a;
+
+    type Slice<'a, T: Copy + 'a>: Copy + Index<usize, Output = T> + 'a
+    where
+        Self: 'a;
+
+    type String<'a>: Copy + Deref<Target = str> + 'a
+    where
+        Self: 'a;
+
+    type Strings<'a>: Iterator<Item = Self::String<'a>> + 'a
+    where
+        Self: 'a;
+
+    fn empty() -> Self;
+
+    fn offset(self, offset: usize) -> Self;
+
+    fn truncate(self, size: usize) -> Self;
+
+    fn read<'a, T: Pod + Copy>(self) -> Result<Self::Ref<'a, T>, Self::Error>
+    where
+        Self: 'a;
+
+    fn read_array<'a, T: Pod + Copy>(self) -> Result<Self::Slice<'a, T>, Self::Error>
+    where
+        Self: 'a;
+
+    fn read_str<'a>(self) -> Result<Self::String<'a>, Self::Error>
+    where
+        Self: 'a;
+
+    fn read_strs_to_null<'a>(self) -> Self::Strings<'a>
+    where
+        Self: 'a;
+}
+
+// impl<B: Index<usize, Output = u8>> Buffer for B {}
 
 pub type P32 = u32;
 pub type P64 = u64;
 
 #[derive(Debug)]
-pub struct ElfFile<'a> {
-    pub input: &'a [u8],
-    pub header: Header<'a>,
+pub struct ElfFile<'a, B: Buffer + 'a> {
+    pub input: B,
+    pub header: Header<'a, B>,
 }
 
-impl<'a> ElfFile<'a> {
-    pub fn new(input: &'a [u8]) -> Result<ElfFile<'a>, &'static str> {
-        header::parse_header(input).map(|header| ElfFile {input, header})
+impl<'a, B: Buffer + 'a> ElfFile<'a, B> {
+    pub fn new(input: B) -> Result<Self, ParseError<B::Error>> {
+        header::parse_header(input).map(|header| ElfFile { input, header })
     }
 
-    pub fn section_header(&self, index: u16) -> Result<SectionHeader<'a>, &'static str> {
+    pub fn section_header(&self, index: u16) -> Result<SectionHeader<'a, B>, ParseError<B::Error>> {
         sections::parse_section_header(self.input, self.header, index)
     }
 
-    pub fn section_iter(&self) -> impl Iterator<Item = SectionHeader<'a>> + '_ {
+    pub fn section_iter(&self) -> impl Iterator<Item = SectionHeader<'a, B>> + '_ {
         SectionIter {
             file: self,
             next_index: 0,
         }
     }
 
-    pub fn program_header(&self, index: u16) -> Result<ProgramHeader<'a>, &'static str> {
+    pub fn program_header(&self, index: u16) -> Result<ProgramHeader<'a, B>, ParseError<B::Error>> {
         program::parse_program_header(self.input, self.header, index)
     }
 
-    pub fn program_iter(&self) -> impl Iterator<Item = ProgramHeader<'a>> + '_ {
+    pub fn program_iter(&self) -> impl Iterator<Item = ProgramHeader<'a, B>> + '_ {
         ProgramIter {
             file: self,
             next_index: 0,
         }
     }
 
-    pub fn get_shstr(&self, index: u32) -> Result<&'a str, &'static str> {
-        self.get_shstr_table().map(|shstr_table| read_str(&shstr_table[(index as usize)..]))
+    pub fn get_shstr(&self, index: u32) -> Result<B::String<'_>, ParseError<B::Error>> {
+        self.get_shstr_table().and_then(|shstr_table| {
+            shstr_table
+                .offset(index as usize)
+                .read_str()
+                .map_err(ParseError::Io)
+        })
     }
 
-    pub fn get_string(&self, index: u32) -> Result<&'a str, &'static str> {
-        let header = self.find_section_by_name(".strtab").ok_or("no .strtab section")?;
-        if header.get_type()? != sections::ShType::StrTab {
-            return Err("expected .strtab to be StrTab");
+    pub fn get_string(&'a self, index: u32) -> Result<B::String<'a>, ParseError<B::Error>> {
+        let header = self
+            .find_section_by_name(".strtab")
+            .ok_or(ParseError::Message("no .strtab section"))?;
+        if header.get_type().map_err(ParseError::Message)? != sections::ShType::StrTab {
+            return Err(ParseError::Message("expected .strtab to be StrTab"));
         }
-        Ok(read_str(&header.raw_data(self)[(index as usize)..]))
+        header
+            .raw_data(self)
+            .offset(index as usize)
+            .read_str()
+            .map_err(ParseError::Io)
     }
 
-    pub fn get_dyn_string(&self, index: u32) -> Result<&'a str, &'static str> {
-        let header = self.find_section_by_name(".dynstr").ok_or("no .dynstr section")?;
-        Ok(read_str(&header.raw_data(self)[(index as usize)..]))
+    pub fn get_dyn_string(&'a self, index: u32) -> Result<B::String<'a>, ParseError<B::Error>> {
+        let header = self
+            .find_section_by_name(".dynstr")
+            .ok_or(ParseError::Message("no .dynstr section"))?;
+        header
+            .raw_data(self)
+            .offset(index as usize)
+            .read_str()
+            .map_err(ParseError::Io)
     }
 
     // This is really, stupidly slow. Not sure how to fix that, perhaps keeping
     // a HashTable mapping names to section header indices?
-    pub fn find_section_by_name(&self, name: &str) -> Option<SectionHeader<'a>> {
+    pub fn find_section_by_name(&'a self, name: &'a str) -> Option<SectionHeader<'a, B>> {
         for sect in self.section_iter() {
             if let Ok(sect_name) = sect.get_name(self) {
-                if sect_name == name {
+                if &*sect_name == name {
                     return Some(sect);
                 }
             }
@@ -103,37 +182,37 @@ impl<'a> ElfFile<'a> {
         None
     }
 
-    fn get_shstr_table(&self) -> Result<&'a [u8], &'static str> {
+    fn get_shstr_table(&self) -> Result<B, ParseError<B::Error>> {
         // TODO cache this?
         let header = self.section_header(self.header.pt2.sh_str_index());
         header.and_then(|h| {
             let offset = h.offset() as usize;
-            if self.input.len() < offset {
-                return Err("File is shorter than section offset");
-            }
-            Ok(&self.input[offset..])
+            // if self.input.len() < offset {
+            //     return Err("File is shorter than section offset");
+            // }
+            Ok(self.input.offset(offset))
         })
     }
 }
 
 /// A trait for things that are common ELF conventions but not part of the ELF
 /// specification.
-pub trait Extensions<'a> {
+pub trait Extensions<'a, B: Buffer + 'a> {
     /// Parse and return the value of the .note.gnu.build-id section, if it
     /// exists and is well-formed.
-    fn get_gnu_buildid(&self) -> Option<&'a [u8]>;
+    fn get_gnu_buildid(&'a self) -> Option<B>;
 
     /// Parse and return the value of the .gnu_debuglink section, if it
     /// exists and is well-formed.
-    fn get_gnu_debuglink(&self) -> Option<(&'a str, u32)>;
+    fn get_gnu_debuglink(&'a self) -> Option<(B::String<'a>, u32)>;
 
     /// Parse and return the value of the .gnu_debugaltlink section, if it
     /// exists and is well-formed.
-    fn get_gnu_debugaltlink(&self) -> Option<(&'a str, &'a [u8])>;
+    fn get_gnu_debugaltlink(&'a self) -> Option<(B::String<'a>, B)>;
 }
 
-impl<'a> Extensions<'a> for ElfFile<'a> {
-    fn get_gnu_buildid(&self) -> Option<&'a [u8]> {
+impl<'a, B: Buffer + 'a> Extensions<'a, B> for ElfFile<'a, B> {
+    fn get_gnu_buildid(&'a self) -> Option<B> {
         self.find_section_by_name(".note.gnu.build-id")
             .and_then(|header| header.get_data(self).ok())
             .and_then(|data| match data {
@@ -147,7 +226,7 @@ impl<'a> Extensions<'a> for ElfFile<'a> {
                     return None;
                 }
 
-                if header.name(data) != "GNU" {
+                if &*header.name(data).ok()? != "GNU" {
                     return None;
                 }
 
@@ -155,34 +234,26 @@ impl<'a> Extensions<'a> for ElfFile<'a> {
             })
     }
 
-    fn get_gnu_debuglink(&self) -> Option<(&'a str, u32)> {
+    fn get_gnu_debuglink(&'a self) -> Option<(B::String<'a>, u32)> {
         self.find_section_by_name(".gnu_debuglink")
             .and_then(|header| {
                 let data = header.raw_data(self);
-                let file = read_str(data);
+                let file = data.read_str().ok()?;
                 // Round up to the nearest multiple of 4.
                 let checksum_pos = ((file.len() + 4) / 4) * 4;
-                if checksum_pos + 4 <= data.len() {
-                    let checksum: u32 = *read(&data[checksum_pos..]);
-                    Some((file, checksum))
-                } else {
-                    None
-                }
+                let checksum: u32 = *data.offset(checksum_pos).read().ok()?;
+                Some((file, checksum))
             })
     }
 
-    fn get_gnu_debugaltlink(&self) -> Option<(&'a str, &'a [u8])> {
+    fn get_gnu_debugaltlink(&'a self) -> Option<(B::String<'a>, B)> {
         self.find_section_by_name(".gnu_debugaltlink")
             .map(|header| header.raw_data(self))
             .and_then(|data| {
-                let file = read_str(data);
+                let file = data.read_str().ok()?;
                 // The rest of the data is a SHA1 checksum of the debuginfo, no alignment
                 let checksum_pos = file.len() + 1;
-                if checksum_pos <= data.len() {
-                    Some((file, &data[checksum_pos..]))
-                } else {
-                    None
-                }
+                Some((file, data.offset(checksum_pos)))
             })
     }
 }
@@ -195,18 +266,18 @@ extern crate std;
 mod test {
     use std::prelude::v1::*;
 
-    use std::mem;
+    use crate::slice::SliceBuffer;
 
     use super::*;
     use header::{HeaderPt1, HeaderPt2_};
 
     fn mk_elf_header(class: u8) -> Vec<u8> {
-        let header_size = mem::size_of::<HeaderPt1>() +
-                          match class {
-            1 => mem::size_of::<HeaderPt2_<P32>>(),
-            2 => mem::size_of::<HeaderPt2_<P64>>(),
-            _ => 0,
-        };
+        let header_size = size_of::<HeaderPt1>()
+            + match class {
+                1 => size_of::<HeaderPt2_<P32>>(),
+                2 => size_of::<HeaderPt2_<P64>>(),
+                _ => 0,
+            };
         let mut header = vec![0x7f, 'E' as u8, 'L' as u8, 'F' as u8];
         let data = 1u8;
         let version = 1u8;
@@ -217,9 +288,21 @@ mod test {
 
     #[test]
     fn interpret_class() {
-        assert!(ElfFile::new(&mk_elf_header(0)).is_err());
-        assert!(ElfFile::new(&mk_elf_header(1)).is_ok());
-        assert!(ElfFile::new(&mk_elf_header(2)).is_ok());
-        assert!(ElfFile::new(&mk_elf_header(42u8)).is_err());
+        assert!(ElfFile::new(SliceBuffer {
+            inner: &mk_elf_header(0)
+        })
+        .is_err());
+        assert!(ElfFile::new(SliceBuffer {
+            inner: &mk_elf_header(1)
+        })
+        .is_ok());
+        assert!(ElfFile::new(SliceBuffer {
+            inner: &mk_elf_header(2)
+        })
+        .is_ok());
+        assert!(ElfFile::new(SliceBuffer {
+            inner: &mk_elf_header(42u8)
+        })
+        .is_err());
     }
 }

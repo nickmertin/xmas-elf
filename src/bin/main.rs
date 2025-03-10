@@ -1,10 +1,11 @@
 extern crate xmas_elf;
 
-use std::path::Path;
 use std::env;
+use std::path::Path;
 use std::process;
-use xmas_elf::{ElfFile, header, program};
 use xmas_elf::sections;
+use xmas_elf::slice::SliceBuffer;
+use xmas_elf::{header, program, ElfFile};
 
 // Note if running on a 32bit system, then reading Elf64 files probably will not
 // work (maybe if the size of the file in bytes is < u32::Max).
@@ -23,7 +24,7 @@ fn open_file<P: AsRef<Path>>(name: P) -> Vec<u8> {
 
 fn display_binary_information<P: AsRef<Path>>(binary_path: P) {
     let buf = open_file(binary_path);
-    let elf_file = ElfFile::new(&buf).unwrap();
+    let elf_file = ElfFile::new(SliceBuffer { inner: &buf }).unwrap();
     println!("{}", elf_file.header);
     header::sanity_check(&elf_file).unwrap();
 
@@ -63,13 +64,13 @@ fn display_binary_information<P: AsRef<Path>>(binary_path: P) {
             println!("{}", sect);
             match sect.get_data(&elf_file) {
                 Ok(program::SegmentData::Note64(header, ptr)) => {
-                    println!("{}: {:?}", header.name(ptr), header.desc(ptr))
+                    println!("{}: {:?}", header.name(ptr).unwrap(), header.desc(ptr))
                 }
                 Ok(_) => (),
-                Err(err) => println!("Error: {}", err),
+                Err(err) => println!("Error: {:?}", err),
             }
         }
-        Err(err) => println!("Error: {}", err),
+        Err(err) => println!("Error: {:?}", err),
     }
 
     // let sect = elf_file.find_section_by_name(".rodata.const2794").unwrap();

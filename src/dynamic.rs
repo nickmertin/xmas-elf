@@ -2,7 +2,7 @@ use core::fmt;
 use zero::Pod;
 use {P32, P64};
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct Dynamic<P>
 where

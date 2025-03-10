@@ -4,56 +4,65 @@ use std::borrow::Cow;
 use std::vec::Vec;
 
 use core::fmt;
-use core::mem;
-use core::slice;
 
 #[cfg(feature = "compression")]
 use flate2::{Decompress, FlushDecompress};
 
-use {P32, P64, ElfFile};
-use header::{Header, Class};
-use zero::{read, read_array, read_str, read_strs_to_null, StrReaderIterator, Pod};
-use symbol_table;
+use crate::{Buffer, ParseError};
+
 use dynamic::Dynamic;
 use hash::HashTable;
+use header::{Class, Header};
+use symbol_table;
+use zero::Pod;
+use {ElfFile, P32, P64};
 
-pub fn parse_section_header<'a>(input: &'a [u8],
-                                header: Header<'a>,
-                                index: u16)
-                                -> Result<SectionHeader<'a>, &'static str> {
+pub fn parse_section_header<'a, B: Buffer + 'a>(
+    input: B,
+    header: Header<'a, B>,
+    index: u16,
+) -> Result<SectionHeader<'a, B>, ParseError<B::Error>> {
     // Trying to get index 0 (SHN_UNDEF) is also probably an error, but it is a legitimate section.
-    assert!(index < SHN_LORESERVE,
-            "Attempt to get section for a reserved index");
+    assert!(
+        index < SHN_LORESERVE,
+        "Attempt to get section for a reserved index"
+    );
 
-    let start = (index as u64 * header.pt2.sh_entry_size() as u64 +
-                 header.pt2.sh_offset() as u64) as usize;
-    let end = start + header.pt2.sh_entry_size() as usize;
+    let start =
+        (index as u64 * header.pt2.sh_entry_size() as u64 + header.pt2.sh_offset() as u64) as usize;
+    let size = header.pt2.sh_entry_size() as usize;
 
-    if input.len() < end {
-        return Err("File is shorter than section header offset");
-    }
+    // if input.len() < end {
+    //     return Err("File is shorter than section header offset");
+    // }
 
     Ok(match header.pt1.class() {
-        Class::ThirtyTwo => {
-            let header: &'a SectionHeader_<P32> = read(&input[start..end]);
-            SectionHeader::Sh32(header)
-        }
-        Class::SixtyFour => {
-            let header: &'a SectionHeader_<P64> = read(&input[start..end]);
-            SectionHeader::Sh64(header)
-        }
+        Class::ThirtyTwo => SectionHeader::Sh32(
+            input
+                .offset(start)
+                .truncate(size)
+                .read()
+                .map_err(ParseError::Io)?,
+        ),
+        Class::SixtyFour => SectionHeader::Sh64(
+            input
+                .offset(start)
+                .truncate(size)
+                .read()
+                .map_err(ParseError::Io)?,
+        ),
         Class::None | Class::Other(_) => unreachable!(),
     })
 }
 
 #[derive(Debug, Clone)]
-pub struct SectionIter<'b, 'a: 'b> {
-    pub file: &'b ElfFile<'a>,
+pub struct SectionIter<'b, 'a: 'b, B: Buffer + 'a> {
+    pub file: &'b ElfFile<'a, B>,
     pub next_index: u16,
 }
 
-impl<'b, 'a> Iterator for SectionIter<'b, 'a> {
-    type Item = SectionHeader<'a>;
+impl<'b, 'a, B: Buffer + 'a> Iterator for SectionIter<'b, 'a, B> {
+    type Item = SectionHeader<'a, B>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let count = self.file.header.pt2.sh_count();
@@ -80,9 +89,9 @@ pub const SHN_XINDEX: u16 = 0xffff;
 pub const SHN_HIRESERVE: u16 = 0xffff;
 
 #[derive(Clone, Copy, Debug)]
-pub enum SectionHeader<'a> {
-    Sh32(&'a SectionHeader_<P32>),
-    Sh64(&'a SectionHeader_<P64>),
+pub enum SectionHeader<'a, B: Buffer + 'a> {
+    Sh32(B::Ref<'a, SectionHeader_<P32>>),
+    Sh64(B::Ref<'a, SectionHeader_<P64>>),
 }
 
 macro_rules! getter {
@@ -93,86 +102,106 @@ macro_rules! getter {
                 SectionHeader::Sh64(h) => h.$name as $typ,
             }
         }
-    }
+    };
 }
 
-impl<'a> SectionHeader<'a> {
+impl<'a, B: Buffer + 'a> SectionHeader<'a, B> {
     // Note that this function is O(n) in the length of the name.
-    pub fn get_name(&self, elf_file: &ElfFile<'a>) -> Result<&'a str, &'static str> {
-        self.get_type().and_then(|typ| match typ {
-            ShType::Null => Err("Attempt to get name of null section"),
-            _ => elf_file.get_shstr(self.name()),
-        })
+    pub fn get_name(
+        &self,
+        elf_file: &'a ElfFile<'a, B>,
+    ) -> Result<B::String<'a>, ParseError<B::Error>> {
+        self.get_type()
+            .map_err(ParseError::Message)
+            .and_then(|typ| match typ {
+                ShType::Null => Err(ParseError::Message("Attempt to get name of null section")),
+                _ => elf_file.get_shstr(self.name()),
+            })
     }
 
     pub fn get_type(&self) -> Result<ShType, &'static str> {
         self.type_().as_sh_type()
     }
 
-    pub fn get_data(&self, elf_file: &ElfFile<'a>) -> Result<SectionData<'a>, &'static str> {
+    pub fn get_data(
+        &self,
+        elf_file: &ElfFile<'a, B>,
+    ) -> Result<SectionData<'a, B>, ParseError<B::Error>> {
         macro_rules! array_data {
             ($data32: ident, $data64: ident) => {{
                 let data = self.raw_data(elf_file);
                 match elf_file.header.pt1.class() {
-                    Class::ThirtyTwo => SectionData::$data32(read_array(data)),
-                    Class::SixtyFour => SectionData::$data64(read_array(data)),
+                    Class::ThirtyTwo => {
+                        SectionData::$data32(data.read_array().map_err(ParseError::Io)?)
+                    }
+                    Class::SixtyFour => {
+                        SectionData::$data64(data.read_array().map_err(ParseError::Io)?)
+                    }
                     Class::None | Class::Other(_) => unreachable!(),
                 }
-            }}
+            }};
         }
 
-        self.get_type().and_then(|typ| Ok(match typ {
-            ShType::Null | ShType::NoBits => SectionData::Empty,
-            ShType::ProgBits |
-            ShType::ShLib |
-            ShType::OsSpecific(_) |
-            ShType::ProcessorSpecific(_) |
-            ShType::User(_) => SectionData::Undefined(self.raw_data(elf_file)),
-            ShType::SymTab => array_data!(SymbolTable32, SymbolTable64),
-            ShType::DynSym => array_data!(DynSymbolTable32, DynSymbolTable64),
-            ShType::StrTab => SectionData::StrArray(self.raw_data(elf_file)),
-            ShType::InitArray | ShType::FiniArray | ShType::PreInitArray => {
-                array_data!(FnArray32, FnArray64)
-            }
-            ShType::Rela => array_data!(Rela32, Rela64),
-            ShType::Rel => array_data!(Rel32, Rel64),
-            ShType::Dynamic => array_data!(Dynamic32, Dynamic64),
-            ShType::Group => {
-                let data = self.raw_data(elf_file);
-                unsafe {
-                    let flags: &'a u32 = mem::transmute(&data[0]);
-                    let indicies: &'a [u32] = read_array(&data[4..]);
-                    SectionData::Group {
-                        flags,
-                        indicies,
+        self.get_type()
+            .map_err(ParseError::Message)
+            .and_then(|typ| {
+                Ok(match typ {
+                    ShType::Null | ShType::NoBits => SectionData::Empty,
+                    ShType::ProgBits
+                    | ShType::ShLib
+                    | ShType::OsSpecific(_)
+                    | ShType::ProcessorSpecific(_)
+                    | ShType::User(_) => SectionData::Undefined(self.raw_data(elf_file)),
+                    ShType::SymTab => array_data!(SymbolTable32, SymbolTable64),
+                    ShType::DynSym => array_data!(DynSymbolTable32, DynSymbolTable64),
+                    ShType::StrTab => SectionData::StrArray(self.raw_data(elf_file)),
+                    ShType::InitArray | ShType::FiniArray | ShType::PreInitArray => {
+                        array_data!(FnArray32, FnArray64)
                     }
-                }
-            }
-            ShType::SymTabShIndex => {
-                SectionData::SymTabShIndex(read_array(self.raw_data(elf_file)))
-            }
-            ShType::Note => {
-                let data = self.raw_data(elf_file);
-                match elf_file.header.pt1.class() {
-                    Class::ThirtyTwo => return Err("32-bit binaries not implemented"),
-                    Class::SixtyFour => {
-                        let header: &'a NoteHeader = read(&data[0..12]);
-                        let index = &data[12..];
-                        SectionData::Note64(header, index)
+                    ShType::Rela => array_data!(Rela32, Rela64),
+                    ShType::Rel => array_data!(Rel32, Rel64),
+                    ShType::Dynamic => array_data!(Dynamic32, Dynamic64),
+                    ShType::Group => {
+                        let data = self.raw_data(elf_file);
+                        let flags = data.truncate(4).read().map_err(ParseError::Io)?;
+                        let indicies = data.offset(4).read_array().map_err(ParseError::Io)?;
+                        unsafe { SectionData::Group { flags, indicies } }
                     }
-                    Class::None | Class::Other(_) => return Err("Unknown ELF class"),
-                }
-            }
-            ShType::Hash => {
-                let data = self.raw_data(elf_file);
-                SectionData::HashTable(read(&data[0..12]))
-            }
-        }))
+                    ShType::SymTabShIndex => SectionData::SymTabShIndex(
+                        self.raw_data(elf_file)
+                            .read_array()
+                            .map_err(ParseError::Io)?,
+                    ),
+                    ShType::Note => {
+                        let data = self.raw_data(elf_file);
+                        match elf_file.header.pt1.class() {
+                            Class::ThirtyTwo => {
+                                return Err(ParseError::Message("32-bit binaries not implemented"))
+                            }
+                            Class::SixtyFour => {
+                                let header = data.truncate(12).read().map_err(ParseError::Io)?;
+                                let index = data.offset(12);
+                                SectionData::Note64(header, index)
+                            }
+                            Class::None | Class::Other(_) => {
+                                return Err(ParseError::Message("Unknown ELF class"))
+                            }
+                        }
+                    }
+                    ShType::Hash => {
+                        let data = self.raw_data(elf_file);
+                        SectionData::HashTable(data.truncate(12).read().map_err(ParseError::Io)?)
+                    }
+                })
+            })
     }
 
-    pub fn raw_data(&self, elf_file: &ElfFile<'a>) -> &'a [u8] {
+    pub fn raw_data(&self, elf_file: &ElfFile<'a, B>) -> B {
         assert_ne!(self.get_type().unwrap(), ShType::Null);
-        &elf_file.input[self.offset() as usize..(self.offset() + self.size()) as usize]
+        elf_file
+            .input
+            .offset(self.offset() as usize)
+            .truncate(self.size() as usize)
     }
 
     #[cfg(feature = "compression")]
@@ -181,7 +210,9 @@ impl<'a> SectionHeader<'a> {
         Ok(if (self.flags() & SHF_COMPRESSED) == 0 {
             Cow::Borrowed(raw)
         } else {
-            fn read_compression_header<'a, T: Pod + Clone>(raw: &'a [u8]) -> Result<(T, &'a [u8]), &'static str> {
+            fn read_compression_header<'a, T: Pod + Clone>(
+                raw: &'a [u8],
+            ) -> Result<(T, &'a [u8]), &'static str> {
                 if raw.len() < mem::size_of::<T>() {
                     return Err("Unexpected EOF in compressed section");
                 }
@@ -197,12 +228,20 @@ impl<'a> SectionHeader<'a> {
             let (compression_type, size, compressed_data) = match elf_file.header.pt1.class() {
                 Class::ThirtyTwo => {
                     let (header, rest) = read_compression_header::<CompressionHeader32>(raw)?;
-                    (header.type_.as_compression_type(), header.size as usize, rest)
-                },
+                    (
+                        header.type_.as_compression_type(),
+                        header.size as usize,
+                        rest,
+                    )
+                }
                 Class::SixtyFour => {
                     let (header, rest) = read_compression_header::<CompressionHeader64>(raw)?;
-                    (header.type_.as_compression_type(), header.size as usize, rest)
-                },
+                    (
+                        header.type_.as_compression_type(),
+                        header.size as usize,
+                        rest,
+                    )
+                }
                 Class::None | Class::Other(_) => unreachable!(),
             };
 
@@ -211,7 +250,10 @@ impl<'a> SectionHeader<'a> {
                     let mut decompressed = Vec::with_capacity(size);
                     let mut decompress = Decompress::new(true);
                     if let Err(_) = decompress.decompress_vec(
-                        compressed_data, &mut decompressed, FlushDecompress::Finish) {
+                        compressed_data,
+                        &mut decompressed,
+                        FlushDecompress::Finish,
+                    ) {
                         return Err("Decompression error");
                     }
                     Cow::Owned(decompressed)
@@ -240,7 +282,7 @@ impl<'a> SectionHeader<'a> {
     getter!(align, u64);
 }
 
-impl<'a> fmt::Display for SectionHeader<'a> {
+impl<'a, B: Buffer + 'a> fmt::Display for SectionHeader<'a, B> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         macro_rules! sh_display {
             ($sh: ident) => {{
@@ -255,7 +297,7 @@ impl<'a> fmt::Display for SectionHeader<'a> {
                 writeln!(f, "    align:            {:?}", $sh.align)?;
                 writeln!(f, "    entry size:       {:?}", $sh.entry_size)?;
                 Ok(())
-            }}
+            }};
         }
 
         match *self {
@@ -265,7 +307,7 @@ impl<'a> fmt::Display for SectionHeader<'a> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct SectionHeader_<P> {
     name: u32,
@@ -345,48 +387,53 @@ impl fmt::Debug for ShType_ {
 }
 
 #[derive(Debug)]
-pub enum SectionData<'a> {
+pub enum SectionData<'a, B: Buffer + 'a> {
     Empty,
-    Undefined(&'a [u8]),
-    Group { flags: &'a u32, indicies: &'a [u32] },
-    StrArray(&'a [u8]),
-    FnArray32(&'a [u32]),
-    FnArray64(&'a [u64]),
-    SymbolTable32(&'a [symbol_table::Entry32]),
-    SymbolTable64(&'a [symbol_table::Entry64]),
-    DynSymbolTable32(&'a [symbol_table::DynEntry32]),
-    DynSymbolTable64(&'a [symbol_table::DynEntry64]),
-    SymTabShIndex(&'a [u32]),
+    Undefined(B),
+    Group {
+        flags: B::Ref<'a, u32>,
+        indicies: B::Slice<'a, u32>,
+    },
+    StrArray(B),
+    FnArray32(B::Slice<'a, u32>),
+    FnArray64(B::Slice<'a, u64>),
+    SymbolTable32(B::Slice<'a, symbol_table::Entry32>),
+    SymbolTable64(B::Slice<'a, symbol_table::Entry64>),
+    DynSymbolTable32(B::Slice<'a, symbol_table::DynEntry32>),
+    DynSymbolTable64(B::Slice<'a, symbol_table::DynEntry64>),
+    SymTabShIndex(B::Slice<'a, u32>),
     // Note32 uses 4-byte words, which I'm not sure how to manage.
     // The pointer is to the start of the name field in the note.
-    Note64(&'a NoteHeader, &'a [u8]),
-    Rela32(&'a [Rela<P32>]),
-    Rela64(&'a [Rela<P64>]),
-    Rel32(&'a [Rel<P32>]),
-    Rel64(&'a [Rel<P64>]),
-    Dynamic32(&'a [Dynamic<P32>]),
-    Dynamic64(&'a [Dynamic<P64>]),
-    HashTable(&'a HashTable),
+    Note64(B::Ref<'a, NoteHeader>, B),
+    Rela32(B::Slice<'a, Rela<P32>>),
+    Rela64(B::Slice<'a, Rela<P64>>),
+    Rel32(B::Slice<'a, Rel<P32>>),
+    Rel64(B::Slice<'a, Rel<P64>>),
+    Dynamic32(B::Slice<'a, Dynamic<P32>>),
+    Dynamic64(B::Slice<'a, Dynamic<P64>>),
+    HashTable(B::Ref<'a, HashTable>),
 }
 
 #[derive(Debug)]
-pub struct SectionStrings<'a> {
-    inner: StrReaderIterator<'a>,
+pub struct SectionStrings<'a, B: Buffer + 'a> {
+    inner: B::Strings<'a>,
 }
 
-impl<'a> Iterator for SectionStrings<'a> {
-    type Item = &'a str;
+impl<'a, B: Buffer + 'a> Iterator for SectionStrings<'a, B> {
+    type Item = B::String<'a>;
 
     #[inline]
-    fn next(&mut self) -> Option<&'a str> {
+    fn next(&mut self) -> Option<B::String<'a>> {
         self.inner.next()
     }
 }
 
-impl<'a> SectionData<'a> {
-    pub fn strings(&self) -> Result<SectionStrings<'a>, ()> {
+impl<'a, B: Buffer + 'a> SectionData<'a, B> {
+    pub fn strings(&self) -> Result<SectionStrings<'a, B>, ()> {
         if let SectionData::StrArray(data) = *self {
-            Ok(SectionStrings { inner: read_strs_to_null(data) })
+            Ok(SectionStrings {
+                inner: data.read_strs_to_null(),
+            })
         } else {
             Err(())
         }
@@ -452,7 +499,9 @@ impl CompressionType_ {
         match self.0 {
             1 => Ok(CompressionType::Zlib),
             2 => Ok(CompressionType::Zstd),
-            ct if (COMPRESS_LOOS..=COMPRESS_HIOS).contains(&ct) => Ok(CompressionType::OsSpecific(ct)),
+            ct if (COMPRESS_LOOS..=COMPRESS_HIOS).contains(&ct) => {
+                Ok(CompressionType::OsSpecific(ct))
+            }
             ct if (COMPRESS_LOPROC..=COMPRESS_HIPROC).contains(&ct) => {
                 Ok(CompressionType::ProcessorSpecific(ct))
             }
@@ -478,7 +527,7 @@ pub const GRP_COMDAT: u64 = 0x1;
 pub const GRP_MASKOS: u64 = 0x0ff00000;
 pub const GRP_MASKPROC: u64 = 0xf0000000;
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct Rela<P> {
     offset: P,
@@ -486,7 +535,7 @@ pub struct Rela<P> {
     addend: P,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct Rel<P> {
     offset: P,
@@ -562,24 +611,26 @@ impl NoteHeader {
         self.type_
     }
 
-    pub fn name<'a>(&'a self, input: &'a [u8]) -> &'a str {
-        let result = read_str(input);
+    pub fn name<'a, B: Buffer + 'a>(&'a self, input: B) -> Result<B::String<'a>, B::Error> {
+        let result = input.read_str()?;
         // - 1 is due to null terminator
         assert_eq!(result.len(), (self.name_size - 1) as usize);
-        result
+        Ok(result)
     }
 
-    pub fn desc<'a>(&'a self, input: &'a [u8]) -> &'a [u8] {
+    pub fn desc<'a, B: Buffer + 'a>(&'a self, input: B) -> B {
         // Account for padding to the next u32.
-        unsafe {
-            let offset = (self.name_size + 3) & !0x3;
-            let ptr = (&input[0] as *const u8).offset(offset as isize);
-            slice::from_raw_parts(ptr, self.desc_size as usize)
-        }
+        let offset = (self.name_size + 3) & !0x3;
+        input
+            .offset(offset as usize)
+            .truncate(self.desc_size as usize)
     }
 }
 
-pub fn sanity_check<'a>(header: SectionHeader<'a>, _file: &ElfFile<'a>) -> Result<(), &'static str> {
+pub fn sanity_check<'a, B: Buffer + 'a>(
+    header: SectionHeader<'a, B>,
+    _file: &ElfFile<'a, B>,
+) -> Result<(), &'static str> {
     if header.get_type()? == ShType::Null {
         return Ok(());
     }

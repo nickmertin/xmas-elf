@@ -1,11 +1,13 @@
-use ElfFile;
 use sections;
+use ElfFile;
 
 use zero::Pod;
 
 use core::fmt;
 
-#[derive(Debug)]
+use crate::{Buffer, ParseError};
+
+#[derive(Clone, Copy, Debug)]
 #[repr(C)]
 struct Entry32_ {
     name: u32,
@@ -16,7 +18,7 @@ struct Entry32_ {
     shndx: u16,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 #[repr(C)]
 struct Entry64_ {
     name: u32,
@@ -30,29 +32,29 @@ struct Entry64_ {
 unsafe impl Pod for Entry32_ {}
 unsafe impl Pod for Entry64_ {}
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct Entry32(Entry32_);
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct Entry64(Entry64_);
 
 unsafe impl Pod for Entry32 {}
 unsafe impl Pod for Entry64 {}
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct DynEntry32(Entry32_);
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct DynEntry64(Entry64_);
 
 unsafe impl Pod for DynEntry32 {}
 unsafe impl Pod for DynEntry64 {}
 
-pub trait Entry {
+pub trait Entry<B: Buffer> {
     fn name(&self) -> u32;
     fn info(&self) -> u8;
     fn other(&self) -> Visibility_;
@@ -60,7 +62,10 @@ pub trait Entry {
     fn value(&self) -> u64;
     fn size(&self) -> u64;
 
-    fn get_name<'a>(&'a self, elf_file: &ElfFile<'a>) -> Result<&'a str, &'static str>;
+    fn get_name<'a>(
+        &'a self,
+        elf_file: &'a ElfFile<'a, B>,
+    ) -> Result<B::String<'a>, ParseError<B::Error>>;
 
     fn get_other(&self) -> Visibility {
         self.other().as_visibility()
@@ -74,39 +79,42 @@ pub trait Entry {
         Type_(self.info() & 0xf).as_type()
     }
 
-    fn get_section_header<'a>(&'a self,
-                              elf_file: &ElfFile<'a>,
-                              self_index: usize)
-                              -> Result<sections::SectionHeader<'a>, &'static str> {
+    fn get_section_header<'a>(
+        &'a self,
+        elf_file: &'a ElfFile<'a, B>,
+        self_index: usize,
+    ) -> Result<sections::SectionHeader<'a, B>, ParseError<B::Error>> {
         match self.shndx() {
             sections::SHN_XINDEX => {
                 // TODO factor out distinguished section names into sections consts
                 let header = elf_file.find_section_by_name(".symtab_shndx");
                 if let Some(header) = header {
-                    assert_eq!(header.get_type()?, sections::ShType::SymTabShIndex);
-                    if let sections::SectionData::SymTabShIndex(data) =
-                        header.get_data(elf_file)? {
+                    assert_eq!(
+                        header.get_type().map_err(ParseError::Message)?,
+                        sections::ShType::SymTabShIndex
+                    );
+                    if let sections::SectionData::SymTabShIndex(data) = header.get_data(elf_file)? {
                         // TODO cope with u32 section indices (count is in sh_size of header 0, etc.)
                         // Note that it is completely bogus to crop to u16 here.
                         let index = data[self_index] as u16;
                         assert_ne!(index, sections::SHN_UNDEF);
                         elf_file.section_header(index)
                     } else {
-                        Err("Expected SymTabShIndex")
+                        Err(ParseError::Message("Expected SymTabShIndex"))
                     }
                 } else {
-                    Err("no .symtab_shndx section")
+                    Err(ParseError::Message("no .symtab_shndx section"))
                 }
             }
-            sections::SHN_UNDEF |
-            sections::SHN_ABS |
-            sections::SHN_COMMON => Err("Reserved section header index"),
+            sections::SHN_UNDEF | sections::SHN_ABS | sections::SHN_COMMON => {
+                Err(ParseError::Message("Reserved section header index"))
+            }
             i => elf_file.section_header(i),
         }
     }
 }
 
-impl fmt::Display for dyn Entry {
+impl<B: Buffer> fmt::Display for dyn Entry<B> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         writeln!(f, "Symbol table entry:")?;
         writeln!(f, "    name:             {:?}", self.name())?;
@@ -122,19 +130,34 @@ impl fmt::Display for dyn Entry {
 
 macro_rules! impl_entry {
     ($name: ident with ElfFile::$strfunc: ident) => {
-        impl Entry for $name {
-            fn get_name<'a>(&'a self, elf_file: &ElfFile<'a>) -> Result<&'a str, &'static str> {
-                elf_file.$strfunc(self.name())
+        impl<B: Buffer> Entry<B> for $name {
+            fn get_name<'a>(
+                &'a self,
+                elf_file: &'a ElfFile<'a, B>,
+            ) -> Result<B::String<'a>, ParseError<B::Error>> {
+                elf_file.$strfunc(Entry::<B>::name(self))
             }
 
-            fn name(&self) -> u32 { self.0.name }
-            fn info(&self) -> u8 { self.0.info }
-            fn other(&self) -> Visibility_ { self.0.other }
-            fn shndx(&self) -> u16 { self.0.shndx }
-            fn value(&self) -> u64 { self.0.value as u64 }
-            fn size(&self) -> u64 { self.0.size as u64 }
+            fn name(&self) -> u32 {
+                self.0.name
+            }
+            fn info(&self) -> u8 {
+                self.0.info
+            }
+            fn other(&self) -> Visibility_ {
+                self.0.other
+            }
+            fn shndx(&self) -> u16 {
+                self.0.shndx
+            }
+            fn value(&self) -> u64 {
+                self.0.value as u64
+            }
+            fn size(&self) -> u64 {
+                self.0.size as u64
+            }
         }
-    }
+    };
 }
 impl_entry!(Entry32 with ElfFile::get_string);
 impl_entry!(Entry64 with ElfFile::get_string);

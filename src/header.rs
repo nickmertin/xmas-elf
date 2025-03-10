@@ -1,39 +1,48 @@
 use core::fmt;
+use core::fmt::Debug;
 use core::mem;
 
-use {P32, P64, ElfFile};
+use crate::{Buffer, ParseError};
 use zero::{read, Pod};
 
+use {ElfFile, P32, P64};
 
-pub fn parse_header<'a>(input: &'a [u8]) -> Result<Header<'a>, &'static str> {
-    let size_pt1 = mem::size_of::<HeaderPt1>();
-    if input.len() < size_pt1 {
-        return Err("File is shorter than the first ELF header part");
-    }
+pub fn parse_header<'a, B: Buffer + 'a>(input: B) -> Result<Header<'a, B>, ParseError<B::Error>> {
+    let size_pt1 = size_of::<HeaderPt1>();
+    // if input.len() < size_pt1 {
+    //     return Err("File is shorter than the first ELF header part");
+    // }
 
-    let header_1: &'a HeaderPt1 = read(&input[..size_pt1]);
+    let header_1: B::Ref<'a, HeaderPt1> =
+        input.truncate(size_pt1).read().map_err(ParseError::Io)?;
     if header_1.magic != MAGIC {
-        return Err("Did not find ELF magic number");
+        return Err(ParseError::Message("Did not find ELF magic number"));
     }
 
     let header_2 = match header_1.class() {
-        Class::None | Class::Other(_) => return Err("Invalid ELF class"),
+        Class::None | Class::Other(_) => return Err(ParseError::Message("Invalid ELF class")),
         Class::ThirtyTwo => {
-            let size_pt2 = mem::size_of::<HeaderPt2_<P32>>();
-            if input.len() < size_pt1 + size_pt2 {
-                return Err("File is shorter than ELF headers");
-            }
-            let header_2: &'a HeaderPt2_<P32> =
-                read(&input[size_pt1..size_pt1 + mem::size_of::<HeaderPt2_<P32>>()]);
+            let size_pt2 = size_of::<HeaderPt2_<P32>>();
+            // if input.len() < size_pt1 + size_pt2 {
+            //     return Err(ParseError::Message("File is shorter than ELF headers"));
+            // }
+            let header_2: B::Ref<'a, HeaderPt2_<P32>> = input
+                .offset(size_pt1)
+                .truncate(size_pt2)
+                .read()
+                .map_err(ParseError::Io)?;
             HeaderPt2::Header32(header_2)
         }
         Class::SixtyFour => {
-            let size_pt2 = mem::size_of::<HeaderPt2_<P64>>();
-            if input.len() < size_pt1 + size_pt2 {
-                return Err("File is shorter than ELF headers");
-            }
-            let header_2: &'a HeaderPt2_<P64> =
-                read(&input[size_pt1..size_pt1 + mem::size_of::<HeaderPt2_<P64>>()]);
+            let size_pt2 = size_of::<HeaderPt2_<P64>>();
+            // if input.len() < size_pt1 + size_pt2 {
+            //     return Err("File is shorter than ELF headers");
+            // }
+            let header_2: B::Ref<'a, HeaderPt2_<P64>> = input
+                .offset(size_pt1)
+                .truncate(size_pt2)
+                .read()
+                .map_err(ParseError::Io)?;
             HeaderPt2::Header64(header_2)
         }
     };
@@ -45,15 +54,24 @@ pub fn parse_header<'a>(input: &'a [u8]) -> Result<Header<'a>, &'static str> {
 
 pub const MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
 
-#[derive(Clone, Copy, Debug)]
-pub struct Header<'a> {
-    pub pt1: &'a HeaderPt1,
-    pub pt2: HeaderPt2<'a>,
+#[derive(Clone, Copy)]
+pub struct Header<'a, B: Buffer + 'a> {
+    pub pt1: B::Ref<'a, HeaderPt1>,
+    pub pt2: HeaderPt2<'a, B>,
+}
+
+impl<'a, B: Buffer + 'a> Debug for Header<'a, B> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Header")
+            .field("pt1", &*self.pt1)
+            .field("pt2", &self.pt2)
+            .finish()
+    }
 }
 
 // TODO add Header::section_count, because if sh_count = 0, then the real count is in the first section.
 
-impl<'a> fmt::Display for Header<'a> {
+impl<'a, B: Buffer + 'a> fmt::Display for Header<'a, B> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         writeln!(f, "ELF header:")?;
         writeln!(f, "    magic:            {:?}", self.pt1.magic)?;
@@ -101,10 +119,19 @@ impl HeaderPt1 {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-pub enum HeaderPt2<'a> {
-    Header32(&'a HeaderPt2_<P32>),
-    Header64(&'a HeaderPt2_<P64>),
+#[derive(Clone, Copy)]
+pub enum HeaderPt2<'a, B: Buffer + 'a> {
+    Header32(B::Ref<'a, HeaderPt2_<P32>>),
+    Header64(B::Ref<'a, HeaderPt2_<P64>>),
+}
+
+impl<'a, B: Buffer + 'a> Debug for HeaderPt2<'a, B> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Header32(arg0) => f.debug_tuple("Header32").field(&**arg0).finish(),
+            Self::Header64(arg0) => f.debug_tuple("Header64").field(&**arg0).finish(),
+        }
+    }
 }
 
 macro_rules! getter {
@@ -115,10 +142,10 @@ macro_rules! getter {
                 HeaderPt2::Header64(h) => h.$name as $typ,
             }
         }
-    }
+    };
 }
 
-impl<'a> HeaderPt2<'a> {
+impl<'a, B: Buffer + 'a> HeaderPt2<'a, B> {
     pub fn size(&self) -> usize {
         match *self {
             HeaderPt2::Header32(_) => mem::size_of::<HeaderPt2_<P32>>(),
@@ -141,16 +168,16 @@ impl<'a> HeaderPt2<'a> {
     getter!(sh_str_index, u16);
 }
 
-impl<'a> fmt::Display for HeaderPt2<'a> {
+impl<'a, B: Buffer + 'a> fmt::Display for HeaderPt2<'a, B> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            HeaderPt2::Header32(h) => write!(f, "{}", h),
-            HeaderPt2::Header64(h) => write!(f, "{}", h),
+            HeaderPt2::Header32(h) => write!(f, "{}", &*h),
+            HeaderPt2::Header64(h) => write!(f, "{}", &*h),
         }
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct HeaderPt2_<P> {
     pub type_: Type_,
@@ -425,27 +452,33 @@ pub enum Machine {
 
 // TODO any more constants that need to go in here?
 
-pub fn sanity_check(file: &ElfFile) -> Result<(), &'static str> {
+pub fn sanity_check<'a, B: Buffer + 'a>(file: &ElfFile<'a, B>) -> Result<(), &'static str> {
     check!(mem::size_of::<HeaderPt1>() == 16);
     check!(file.header.pt1.magic == MAGIC, "bad magic number");
     let pt2 = &file.header.pt2;
-    check!(mem::size_of::<HeaderPt1>() + pt2.size() == pt2.header_size() as usize,
-           "header_size does not match size of header");
+    check!(
+        mem::size_of::<HeaderPt1>() + pt2.size() == pt2.header_size() as usize,
+        "header_size does not match size of header"
+    );
     match (&file.header.pt1.class(), &file.header.pt2) {
         (&Class::None, _) => return Err("No class"),
-        (&Class::ThirtyTwo, &HeaderPt2::Header32(_)) |
-        (&Class::SixtyFour, &HeaderPt2::Header64(_)) => {}
+        (&Class::ThirtyTwo, &HeaderPt2::Header32(_))
+        | (&Class::SixtyFour, &HeaderPt2::Header64(_)) => {}
         _ => return Err("Mismatch between specified and actual class"),
     }
     check!(!file.header.pt1.version.is_none(), "no version");
     check!(!file.header.pt1.data.is_none(), "no data format");
 
-    check!(pt2.ph_offset() + (pt2.ph_entry_size() as u64) * (pt2.ph_count() as u64) <=
-           file.input.len() as u64,
-           "program header table out of range");
-    check!(pt2.sh_offset() + (pt2.sh_entry_size() as u64) * (pt2.sh_count() as u64) <=
-           file.input.len() as u64,
-           "section header table out of range");
+    // check!(
+    //     pt2.ph_offset() + (pt2.ph_entry_size() as u64) * (pt2.ph_count() as u64)
+    //         <= file.input.len() as u64,
+    //     "program header table out of range"
+    // );
+    // check!(
+    //     pt2.sh_offset() + (pt2.sh_entry_size() as u64) * (pt2.sh_count() as u64)
+    //         <= file.input.len() as u64,
+    //     "section header table out of range"
+    // );
 
     // TODO check that SectionHeader_ is the same size as sh_entry_size, depending on class
 

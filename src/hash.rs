@@ -1,6 +1,8 @@
 use symbol_table::Entry;
 use zero::Pod;
 
+use crate::Buffer;
+
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct HashTable {
@@ -42,8 +44,9 @@ impl HashTable {
         }
     }
 
-    pub fn lookup<'a, F>(&'a self, _name: &str, _f: F) -> &'a dyn Entry
-        where F: Fn(&'a dyn Entry) -> bool
+    pub fn lookup<'a, B: Buffer + 'a, F>(&'a self, _name: &str, _f: F) -> &'a dyn Entry<B>
+    where
+        F: Fn(&'a dyn Entry<B>) -> bool,
     {
         // TODO
         unimplemented!();
