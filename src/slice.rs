@@ -1,9 +1,6 @@
-use core::{
-    convert::Infallible,
-    ops::{Index, Range},
-};
+use core::ops::Index;
 
-use zero::{Pod, StrReaderIterator};
+use zero::{read, read_array, read_str, read_strs_to_null, Pod, StrReaderIterator};
 
 use crate::Buffer;
 
@@ -14,7 +11,7 @@ pub struct SliceBuffer<'s> {
 }
 
 impl<'s> Buffer for SliceBuffer<'s> {
-    type Error = Infallible;
+    type Error = SliceError;
 
     type Ref<'a, T: Copy + 'a>
         = &'a T
@@ -37,43 +34,57 @@ impl<'s> Buffer for SliceBuffer<'s> {
         Self: 'a;
 
     fn empty() -> Self {
-        todo!()
+        Self { inner: &[] }
     }
 
     fn offset(self, offset: usize) -> Self {
-        todo!()
+        Self {
+            inner: &self.inner[offset..],
+        }
     }
 
     fn truncate(self, size: usize) -> Self {
-        todo!()
+        Self {
+            inner: &self.inner[..size],
+        }
     }
 
     fn read<'a, T: Pod + Copy>(self) -> Result<Self::Ref<'a, T>, Self::Error>
     where
         Self: 'a,
     {
-        todo!()
+        if self.inner.len() >= size_of::<T>() {
+            Ok(read(self.inner))
+        } else {
+            Err(SliceError::TooSmall)
+        }
     }
 
     fn read_array<'a, T: Pod + Copy>(self) -> Result<Self::Slice<'a, T>, Self::Error>
     where
         Self: 'a,
     {
-        todo!()
+        if self.inner.len() % size_of::<T>() == 0 {
+            Ok(SliceWrapper {
+                inner: read_array(self.inner),
+            })
+        } else {
+            Err(SliceError::TooSmall)
+        }
     }
 
     fn read_str<'a>(self) -> Result<Self::String<'a>, Self::Error>
     where
         Self: 'a,
     {
-        todo!()
+        Ok(read_str(self.inner))
     }
 
     fn read_strs_to_null<'a>(self) -> Self::Strings<'a>
     where
         Self: 'a,
     {
-        todo!()
+        read_strs_to_null(self.inner)
     }
 }
 
@@ -86,15 +97,20 @@ impl<'s> Index<usize> for SliceBuffer<'s> {
 }
 
 #[derive(Clone, Copy, Debug)]
+pub enum SliceError {
+    TooSmall,
+}
+
+#[derive(Clone, Copy, Debug)]
 #[repr(transparent)]
 pub struct SliceWrapper<'a, T> {
     inner: &'a [T],
 }
 
-impl<'a, T> Index<usize> for SliceWrapper<'a, T> {
+impl<'a, T: Copy> Index<usize> for SliceWrapper<'a, T> {
     type Output = T;
 
     fn index(&self, index: usize) -> &Self::Output {
-        todo!()
+        &self.inner[index]
     }
 }
