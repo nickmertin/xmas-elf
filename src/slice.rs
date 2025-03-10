@@ -88,14 +88,6 @@ impl<'s> Buffer for SliceBuffer<'s> {
     }
 }
 
-impl<'s> Index<usize> for SliceBuffer<'s> {
-    type Output = u8;
-
-    fn index(&self, index: usize) -> &Self::Output {
-        &self.inner[index]
-    }
-}
-
 #[derive(Clone, Copy, Debug)]
 pub enum SliceError {
     TooSmall,

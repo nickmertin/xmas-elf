@@ -54,7 +54,7 @@ pub enum ParseError<T> {
     Message(&'static str),
 }
 
-pub trait Buffer: Index<usize, Output = u8> + Copy {
+pub trait Buffer: Copy {
     type Error;
 
     type Ref<'a, T: Copy + 'a>: Copy + Deref<Target = T> + 'a
