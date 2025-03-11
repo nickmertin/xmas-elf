@@ -51,14 +51,16 @@ pub struct DynEntry64(Entry64_);
 unsafe impl Pod for DynEntry32 {}
 unsafe impl Pod for DynEntry64 {}
 
-pub trait Entry<B: Buffer> {
+pub trait EntryBase {
     fn name(&self) -> u32;
     fn info(&self) -> u8;
     fn other(&self) -> Visibility_;
     fn shndx(&self) -> u16;
     fn value(&self) -> u64;
     fn size(&self) -> u64;
+}
 
+pub trait Entry<B: Buffer>: EntryBase {
     fn get_name<'a, 'b>(
         &'b self,
         elf_file: &'b ElfFile<'a, B>,
@@ -129,17 +131,7 @@ impl<B: Buffer> fmt::Display for dyn Entry<B> {
 
 macro_rules! impl_entry {
     ($name: ident with ElfFile::$strfunc: ident) => {
-        impl<B: Buffer> Entry<B> for $name {
-            fn get_name<'a, 'b>(
-                &'b self,
-                elf_file: &'b ElfFile<'a, B>,
-            ) -> Result<B::String<'a>, ParseError<B::Error>>
-            where
-                'a: 'b,
-            {
-                elf_file.$strfunc(Entry::<B>::name(self))
-            }
-
+        impl EntryBase for $name {
             fn name(&self) -> u32 {
                 self.0.name
             }
@@ -157,6 +149,18 @@ macro_rules! impl_entry {
             }
             fn size(&self) -> u64 {
                 self.0.size as u64
+            }
+        }
+
+        impl<B: Buffer> Entry<B> for $name {
+            fn get_name<'a, 'b>(
+                &'b self,
+                elf_file: &'b ElfFile<'a, B>,
+            ) -> Result<B::String<'a>, ParseError<B::Error>>
+            where
+                'a: 'b,
+            {
+                elf_file.$strfunc(self.name())
             }
         }
     };
