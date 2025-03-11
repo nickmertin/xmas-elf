@@ -1,11 +1,8 @@
-use core::fmt;
-use core::fmt::Debug;
-use core::mem;
+use core::fmt::{self, Debug};
 
-use crate::{Buffer, ParseError};
-use zero::{read, Pod};
+use zero::Pod;
 
-use {ElfFile, P32, P64};
+use crate::{Buffer, ElfFile, ParseError, P32, P64};
 
 pub fn parse_header<'a, B: Buffer + 'a>(input: B) -> Result<Header<'a, B>, ParseError<B::Error>> {
     let size_pt1 = size_of::<HeaderPt1>();
@@ -148,8 +145,8 @@ macro_rules! getter {
 impl<'a, B: Buffer + 'a> HeaderPt2<'a, B> {
     pub fn size(&self) -> usize {
         match *self {
-            HeaderPt2::Header32(_) => mem::size_of::<HeaderPt2_<P32>>(),
-            HeaderPt2::Header64(_) => mem::size_of::<HeaderPt2_<P64>>(),
+            HeaderPt2::Header32(_) => size_of::<HeaderPt2_<P32>>(),
+            HeaderPt2::Header64(_) => size_of::<HeaderPt2_<P64>>(),
         }
     }
 
@@ -234,7 +231,7 @@ impl Class_ {
     }
 }
 
-impl fmt::Debug for Class_ {
+impl Debug for Class_ {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         self.as_class().fmt(f)
     }
@@ -272,7 +269,7 @@ impl Data_ {
     }
 }
 
-impl fmt::Debug for Data_ {
+impl Debug for Data_ {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         self.as_data().fmt(f)
     }
@@ -309,7 +306,7 @@ impl Version_ {
     }
 }
 
-impl fmt::Debug for Version_ {
+impl Debug for Version_ {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         self.as_version().fmt(f)
     }
@@ -349,7 +346,7 @@ impl OsAbi_ {
     }
 }
 
-impl fmt::Debug for OsAbi_ {
+impl Debug for OsAbi_ {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         self.as_os_abi().fmt(f)
     }
@@ -387,7 +384,7 @@ impl Type_ {
     }
 }
 
-impl fmt::Debug for Type_ {
+impl Debug for Type_ {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         self.as_type().fmt(f)
     }
@@ -426,7 +423,7 @@ impl Machine_ {
     }
 }
 
-impl fmt::Debug for Machine_ {
+impl Debug for Machine_ {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         self.as_machine().fmt(f)
     }
@@ -453,11 +450,11 @@ pub enum Machine {
 // TODO any more constants that need to go in here?
 
 pub fn sanity_check<'a, B: Buffer + 'a>(file: &ElfFile<'a, B>) -> Result<(), &'static str> {
-    check!(mem::size_of::<HeaderPt1>() == 16);
+    check!(size_of::<HeaderPt1>() == 16);
     check!(file.header.pt1.magic == MAGIC, "bad magic number");
     let pt2 = &file.header.pt2;
     check!(
-        mem::size_of::<HeaderPt1>() + pt2.size() == pt2.header_size() as usize,
+        size_of::<HeaderPt1>() + pt2.size() == pt2.header_size() as usize,
         "header_size does not match size of header"
     );
     match (&file.header.pt1.class(), &file.header.pt2) {

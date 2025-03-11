@@ -8,14 +8,14 @@ use core::fmt;
 #[cfg(feature = "compression")]
 use flate2::{Decompress, FlushDecompress};
 
-use crate::{Buffer, ParseError};
-
-use dynamic::Dynamic;
-use hash::HashTable;
-use header::{Class, Header};
-use symbol_table;
 use zero::Pod;
-use {ElfFile, P32, P64};
+
+use crate::{
+    dynamic::Dynamic,
+    hash::HashTable,
+    header::{Class, Header},
+    symbol_table, Buffer, ElfFile, ParseError, P32, P64,
+};
 
 pub fn parse_section_header<'a, B: Buffer + 'a>(
     input: B,
@@ -164,8 +164,8 @@ impl<'a, B: Buffer + 'a> SectionHeader<'a, B> {
                     ShType::Group => {
                         let data = self.raw_data(elf_file);
                         let flags = data.truncate(4).read().map_err(ParseError::Io)?;
-                        let indicies = data.offset(4).read_array().map_err(ParseError::Io)?;
-                        unsafe { SectionData::Group { flags, indicies } }
+                        let indices = data.offset(4).read_array().map_err(ParseError::Io)?;
+                        SectionData::Group { flags, indices }
                     }
                     ShType::SymTabShIndex => SectionData::SymTabShIndex(
                         self.raw_data(elf_file)
@@ -392,25 +392,25 @@ pub enum SectionData<'a, B: Buffer + 'a> {
     Undefined(B),
     Group {
         flags: B::Ref<'a, u32>,
-        indicies: B::Slice<'a, u32>,
+        indices: B::Array<'a, u32>,
     },
     StrArray(B),
-    FnArray32(B::Slice<'a, u32>),
-    FnArray64(B::Slice<'a, u64>),
-    SymbolTable32(B::Slice<'a, symbol_table::Entry32>),
-    SymbolTable64(B::Slice<'a, symbol_table::Entry64>),
-    DynSymbolTable32(B::Slice<'a, symbol_table::DynEntry32>),
-    DynSymbolTable64(B::Slice<'a, symbol_table::DynEntry64>),
-    SymTabShIndex(B::Slice<'a, u32>),
+    FnArray32(B::Array<'a, u32>),
+    FnArray64(B::Array<'a, u64>),
+    SymbolTable32(B::Array<'a, symbol_table::Entry32>),
+    SymbolTable64(B::Array<'a, symbol_table::Entry64>),
+    DynSymbolTable32(B::Array<'a, symbol_table::DynEntry32>),
+    DynSymbolTable64(B::Array<'a, symbol_table::DynEntry64>),
+    SymTabShIndex(B::Array<'a, u32>),
     // Note32 uses 4-byte words, which I'm not sure how to manage.
     // The pointer is to the start of the name field in the note.
     Note64(B::Ref<'a, NoteHeader>, B),
-    Rela32(B::Slice<'a, Rela<P32>>),
-    Rela64(B::Slice<'a, Rela<P64>>),
-    Rel32(B::Slice<'a, Rel<P32>>),
-    Rel64(B::Slice<'a, Rel<P64>>),
-    Dynamic32(B::Slice<'a, Dynamic<P32>>),
-    Dynamic64(B::Slice<'a, Dynamic<P64>>),
+    Rela32(B::Array<'a, Rela<P32>>),
+    Rela64(B::Array<'a, Rela<P64>>),
+    Rel32(B::Array<'a, Rel<P32>>),
+    Rel64(B::Array<'a, Rel<P64>>),
+    Dynamic32(B::Array<'a, Dynamic<P32>>),
+    Dynamic64(B::Array<'a, Dynamic<P64>>),
     HashTable(B::Ref<'a, HashTable>),
 }
 

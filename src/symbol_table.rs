@@ -1,11 +1,8 @@
-use sections;
-use ElfFile;
+use core::fmt;
 
 use zero::Pod;
 
-use core::fmt;
-
-use crate::{Buffer, ParseError};
+use crate::{sections, Array, Buffer, ElfFile, ParseError};
 
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
@@ -96,7 +93,7 @@ pub trait Entry<B: Buffer> {
                     if let sections::SectionData::SymTabShIndex(data) = header.get_data(elf_file)? {
                         // TODO cope with u32 section indices (count is in sh_size of header 0, etc.)
                         // Note that it is completely bogus to crop to u16 here.
-                        let index = data[self_index] as u16;
+                        let index = data.read_at(self_index).map_err(ParseError::Io)? as u16;
                         assert_ne!(index, sections::SHN_UNDEF);
                         elf_file.section_header(index)
                     } else {

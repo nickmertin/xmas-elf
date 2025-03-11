@@ -1,8 +1,7 @@
-use core::ops::Index;
-
+use fallible_iterator::FallibleIterator;
 use zero::{read, read_array, read_str, read_strs_to_null, Pod, StrReaderIterator};
 
-use crate::Buffer;
+use crate::{Array, Buffer};
 
 #[derive(Clone, Copy, Debug)]
 #[repr(transparent)]
@@ -18,7 +17,7 @@ impl<'s> Buffer for SliceBuffer<'s> {
     where
         Self: 'a;
 
-    type Slice<'a, T: Copy + 'a>
+    type Array<'a, T: Copy + 'a>
         = SliceWrapper<'a, T>
     where
         Self: 'a;
@@ -60,7 +59,7 @@ impl<'s> Buffer for SliceBuffer<'s> {
         }
     }
 
-    fn read_array<'a, T: Pod + Copy>(self) -> Result<Self::Slice<'a, T>, Self::Error>
+    fn read_array<'a, T: Pod + Copy>(self) -> Result<Self::Array<'a, T>, Self::Error>
     where
         Self: 'a,
     {
@@ -99,10 +98,30 @@ pub struct SliceWrapper<'a, T> {
     inner: &'a [T],
 }
 
-impl<'a, T: Copy> Index<usize> for SliceWrapper<'a, T> {
-    type Output = T;
+impl<'a, T: Copy + 'a> FallibleIterator for SliceWrapper<'a, T> {
+    type Item = T;
 
-    fn index(&self, index: usize) -> &Self::Output {
-        &self.inner[index]
+    type Error = SliceError;
+
+    fn next(&mut self) -> Result<Option<Self::Item>, Self::Error> {
+        Ok(if self.inner.is_empty() {
+            None
+        } else {
+            let output = self.inner[0];
+            self.inner = &self.inner[1..];
+            Some(output)
+        })
+    }
+}
+
+impl<'a, T: Copy + 'a> Array<'a, T> for SliceWrapper<'a, T> {
+    type Error = SliceError;
+
+    fn read_at(&self, index: usize) -> Result<T, <Self as Array<'a, T>>::Error> {
+        if index < self.inner.len() {
+            Ok(self.inner[index])
+        } else {
+            Err(SliceError::TooSmall)
+        }
     }
 }

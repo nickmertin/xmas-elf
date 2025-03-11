@@ -1,10 +1,11 @@
-use crate::{Buffer, ParseError};
-
-use dynamic::Dynamic;
-use header::{Class, Header};
-use sections::NoteHeader;
 use zero::Pod;
-use {ElfFile, P32, P64};
+
+use crate::{
+    dynamic::Dynamic,
+    header::{Class, Header},
+    sections::NoteHeader,
+    Buffer, ElfFile, ParseError, P32, P64,
+};
 
 use core::fmt;
 
@@ -330,8 +331,8 @@ impl fmt::Debug for Type_ {
 pub enum SegmentData<'a, B: Buffer + 'a> {
     Empty,
     Undefined(B),
-    Dynamic32(B::Slice<'a, Dynamic<P32>>),
-    Dynamic64(B::Slice<'a, Dynamic<P64>>),
+    Dynamic32(B::Array<'a, Dynamic<P32>>),
+    Dynamic64(B::Array<'a, Dynamic<P64>>),
     // Note32 uses 4-byte words, which I'm not sure how to manage.
     // The pointer is to the start of the name field in the note.
     Note64(B::Ref<'a, NoteHeader>, B), /* TODO Interp and Phdr should probably be defined some how, but I can't find the details. */

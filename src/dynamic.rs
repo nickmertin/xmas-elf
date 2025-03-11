@@ -1,6 +1,7 @@
 use core::fmt;
 use zero::Pod;
-use {P32, P64};
+
+use crate::{P32, P64};
 
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]

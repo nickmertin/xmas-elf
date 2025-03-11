@@ -28,8 +28,6 @@ extern crate flate2;
 #[cfg(feature = "compression")]
 extern crate std;
 
-extern crate zero;
-
 pub mod dynamic;
 pub mod hash;
 pub mod header;
@@ -38,11 +36,9 @@ pub mod sections;
 pub mod slice;
 pub mod symbol_table;
 
-use core::{
-    convert::Infallible,
-    ops::{Deref, Index, Range, RangeFrom},
-};
+use core::ops::Deref;
 
+use fallible_iterator::IntoFallibleIterator;
 use header::Header;
 use program::{ProgramHeader, ProgramIter};
 use sections::{SectionHeader, SectionIter};
@@ -61,7 +57,7 @@ pub trait Buffer: Copy {
     where
         Self: 'a;
 
-    type Slice<'a, T: Copy + 'a>: Copy + Index<usize, Output = T> + 'a
+    type Array<'a, T: Copy + 'a>: Array<'a, T, Error = Self::Error>
     where
         Self: 'a;
 
@@ -83,7 +79,7 @@ pub trait Buffer: Copy {
     where
         Self: 'a;
 
-    fn read_array<'a, T: Pod + Copy>(self) -> Result<Self::Slice<'a, T>, Self::Error>
+    fn read_array<'a, T: Pod + Copy>(self) -> Result<Self::Array<'a, T>, Self::Error>
     where
         Self: 'a;
 
@@ -96,7 +92,13 @@ pub trait Buffer: Copy {
         Self: 'a;
 }
 
-// impl<B: Index<usize, Output = u8>> Buffer for B {}
+pub trait Array<'a, T: Copy + 'a>:
+    Copy + IntoFallibleIterator<Item = T, Error = <Self as Array<'a, T>>::Error> + 'a
+{
+    type Error;
+
+    fn read_at(&self, index: usize) -> Result<T, <Self as Array<'a, T>>::Error>;
+}
 
 pub type P32 = u32;
 pub type P64 = u64;
