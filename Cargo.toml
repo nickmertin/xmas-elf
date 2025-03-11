@@ -8,7 +8,7 @@ repository = "https://github.com/nrc/xmas-elf"
 keywords = ["elf", "parser", "binary"]
 exclude = ["test-data/*"]
 categories = ["parser-implementations", "os::unix-apis"]
-edition = "2024"
+edition = "2021"
 
 [dependencies]
 zero = "0.1"
