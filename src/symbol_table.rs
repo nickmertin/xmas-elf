@@ -59,10 +59,12 @@ pub trait Entry<B: Buffer> {
     fn value(&self) -> u64;
     fn size(&self) -> u64;
 
-    fn get_name<'a>(
-        &'a self,
-        elf_file: &'a ElfFile<'a, B>,
-    ) -> Result<B::String<'a>, ParseError<B::Error>>;
+    fn get_name<'a, 'b>(
+        &'b self,
+        elf_file: &'b ElfFile<'a, B>,
+    ) -> Result<B::String<'a>, ParseError<B::Error>>
+    where
+        'a: 'b;
 
     fn get_other(&self) -> Visibility {
         self.other().as_visibility()
@@ -128,10 +130,13 @@ impl<B: Buffer> fmt::Display for dyn Entry<B> {
 macro_rules! impl_entry {
     ($name: ident with ElfFile::$strfunc: ident) => {
         impl<B: Buffer> Entry<B> for $name {
-            fn get_name<'a>(
-                &'a self,
-                elf_file: &'a ElfFile<'a, B>,
-            ) -> Result<B::String<'a>, ParseError<B::Error>> {
+            fn get_name<'a, 'b>(
+                &'b self,
+                elf_file: &'b ElfFile<'a, B>,
+            ) -> Result<B::String<'a>, ParseError<B::Error>>
+            where
+                'a: 'b,
+            {
                 elf_file.$strfunc(Entry::<B>::name(self))
             }
 

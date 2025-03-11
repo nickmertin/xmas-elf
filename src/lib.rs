@@ -133,7 +133,7 @@ impl<'a, B: Buffer + 'a> ElfFile<'a, B> {
         }
     }
 
-    pub fn get_shstr(&self, index: u32) -> Result<B::String<'_>, ParseError<B::Error>> {
+    pub fn get_shstr(&self, index: u32) -> Result<B::String<'a>, ParseError<B::Error>> {
         self.get_shstr_table().and_then(|shstr_table| {
             shstr_table
                 .offset(index as usize)
@@ -142,7 +142,10 @@ impl<'a, B: Buffer + 'a> ElfFile<'a, B> {
         })
     }
 
-    pub fn get_string(&'a self, index: u32) -> Result<B::String<'a>, ParseError<B::Error>> {
+    pub fn get_string<'b>(&'b self, index: u32) -> Result<B::String<'a>, ParseError<B::Error>>
+    where
+        'a: 'b,
+    {
         let header = self
             .find_section_by_name(".strtab")
             .ok_or(ParseError::Message("no .strtab section"))?;
@@ -156,7 +159,7 @@ impl<'a, B: Buffer + 'a> ElfFile<'a, B> {
             .map_err(ParseError::Io)
     }
 
-    pub fn get_dyn_string(&'a self, index: u32) -> Result<B::String<'a>, ParseError<B::Error>> {
+    pub fn get_dyn_string<'b>(&'b self, index: u32) -> Result<B::String<'a>, ParseError<B::Error>> {
         let header = self
             .find_section_by_name(".dynstr")
             .ok_or(ParseError::Message("no .dynstr section"))?;
@@ -169,7 +172,7 @@ impl<'a, B: Buffer + 'a> ElfFile<'a, B> {
 
     // This is really, stupidly slow. Not sure how to fix that, perhaps keeping
     // a HashTable mapping names to section header indices?
-    pub fn find_section_by_name(&'a self, name: &'a str) -> Option<SectionHeader<'a, B>> {
+    pub fn find_section_by_name(&self, name: &'a str) -> Option<SectionHeader<'a, B>> {
         for sect in self.section_iter() {
             if let Ok(sect_name) = sect.get_name(self) {
                 if &*sect_name == name {

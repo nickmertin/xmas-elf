@@ -107,13 +107,16 @@ macro_rules! getter {
 
 impl<'a, B: Buffer + 'a> SectionHeader<'a, B> {
     // Note that this function is O(n) in the length of the name.
-    pub fn get_name(
-        &self,
-        elf_file: &'a ElfFile<'a, B>,
-    ) -> Result<B::String<'a>, ParseError<B::Error>> {
+    pub fn get_name<'b>(
+        &'b self,
+        elf_file: &'b ElfFile<'a, B>,
+    ) -> Result<B::String<'a>, ParseError<B::Error>>
+    where
+        'a: 'b,
+    {
         self.get_type()
             .map_err(ParseError::Message)
-            .and_then(|typ| match typ {
+            .and_then(move |typ| match typ {
                 ShType::Null => Err(ParseError::Message("Attempt to get name of null section")),
                 _ => elf_file.get_shstr(self.name()),
             })
