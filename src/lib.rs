@@ -38,7 +38,6 @@ pub mod symbol_table;
 
 use core::ops::Deref;
 
-use fallible_iterator::IntoFallibleIterator;
 use header::Header;
 use program::{ProgramHeader, ProgramIter};
 use sections::{SectionHeader, SectionIter};
@@ -92,9 +91,7 @@ pub trait Buffer: Copy {
         Self: 'a;
 }
 
-pub trait Array<'a, T: Copy + 'a>:
-    Copy + IntoFallibleIterator<Item = T, Error = <Self as Array<'a, T>>::Error> + 'a
-{
+pub trait Array<'a, T: Copy + 'a>: Copy + 'a {
     type Error;
 
     fn read_at(&self, index: usize) -> Result<T, <Self as Array<'a, T>>::Error>;

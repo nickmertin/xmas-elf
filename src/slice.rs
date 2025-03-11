@@ -1,4 +1,3 @@
-use fallible_iterator::FallibleIterator;
 use zero::{read, read_array, read_str, read_strs_to_null, Pod, StrReaderIterator};
 
 use crate::{Array, Buffer};
@@ -96,22 +95,6 @@ pub enum SliceError {
 #[repr(transparent)]
 pub struct SliceWrapper<'a, T> {
     inner: &'a [T],
-}
-
-impl<'a, T: Copy + 'a> FallibleIterator for SliceWrapper<'a, T> {
-    type Item = T;
-
-    type Error = SliceError;
-
-    fn next(&mut self) -> Result<Option<Self::Item>, Self::Error> {
-        Ok(if self.inner.is_empty() {
-            None
-        } else {
-            let output = self.inner[0];
-            self.inner = &self.inner[1..];
-            Some(output)
-        })
-    }
 }
 
 impl<'a, T: Copy + 'a> Array<'a, T> for SliceWrapper<'a, T> {
